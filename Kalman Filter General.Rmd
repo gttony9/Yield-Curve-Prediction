@@ -1,0 +1,186 @@
+---
+title: "Kalman_filter"
+output: html_document
+date: "2025-02-18"
+---
+
+```{r}
+library(tibble)
+library(MASS)
+``` 
+
+
+```{r}
+# This  funciton is used for one step ahed prediction
+# The dimension of State Space Paramters are generalized
+
+FK_prediction <- function(A, B, C, D, R, Q, last_x, last_x_var){
+  # A: state transition matrix for latent paramters x (a * a)
+  # B: process noise coefficient matrix (a * q)
+  # Q: process noise covariance matrix (q) 
+  
+  # C: observation matrix (k * a )
+  # D: time-varying measurement noise coefficient matrix (k * r)
+  # R: measurement noise covariance matrix (r * r)
+  
+  # last_x: x_{t-1|t-1}, the expectation of latent paramter in the last state
+  # last_x_var: Sigma_{t-1|t-1}, the covariance matrix in the last state
+  
+  E_x_t <- A %*% last_x  # x_{t|t-1} one step ahead prediction for latent paramter
+  Var_x_t <- A %*% last_x_var %*% t(A)  + B %*% Q  %*%  B # Sigma_{t|t-1} covariance matrix of one step ahead prediction for latent paramter
+  
+  E_y_t <- C %*% A %*% last_x # y_{t|t-1} one step ahead prediction for reponse variable
+  Var_y_t <- C %*% (A %*% last_x_var %*% t(A) + B %*% Q %*% t(B)) %*% t(A) %*% t(C) + D %*% R %*% t(D) # F, covariance for y prediction
+  
+  
+  return(list(
+    E_x_t = E_x_t,
+    Var_x_t = Var_x_t,
+    E_y_t = E_y_t,
+    Var_y_t = Var_y_t
+  ))
+}
+```
+
+
+# Kalman Filter Paramter Estimation
+```{r}
+KF_Estimate <- function(y_data , T_, dim_A = a, dim_cov_R = r, dim_cov_Q = q){
+    # y_data: Parameter of the form of a list of data frames 
+    # T_: length of time window
+    
+    k <- ncol(y) # dimension of y at time t
+    
+    # Initialization of parameters 
+    # In the early stage, we assume default dimension for Q and R, B hence D to be 3*3/n*n identity matrix 
+    A <- diag(a) # a * a
+    B <- matrix(rnorm(a * r), nrow = a, ncol = r)  # a * r # a * r 
+    Q <- diag(r) # r * r
+    C <- matrix(rnorm(k * a), nrow = k, ncol = a) # k * a
+    D <- matrix(rnorm(k * q), nrow = k, ncol = q) # k * q
+    R <- diag(q) # q * q
+    
+    
+    # place holder for last result iteration of parameter estimation
+    lastA <- 10*diag(a) # a * a
+    lastB <- 10*matrix(rnorm(a * r), nrow = a, ncol = r)  # a * r # a * r 
+    lastQ <- 10*diag(r) # r * r
+    lastC <- 10*matrix(rnorm(k * a), nrow = k, ncol = a) # k * a
+    lsatD <- 10*matrix(rnorm(k * q), nrow = k, ncol = q) # k * q
+    lastR <- 10*diag(q) # q * q
+    
+    # Initialization of partial derivatives w.r.t paramters
+    partial_log_l_A <- diag(a) # a * a
+    partial_log_l_B <- matrix(rnorm(a * r), nrow = a, ncol = r)  # a * r # a * r 
+    partial_log_l_Q <- diag(r) # r * r
+    partial_log_l_C <- matrix(rnorm(k * a), nrow = k, ncol = a) # k * a
+    partial_log_l_D <- matrix(rnorm(k * q), nrow = k, ncol = q) # k * q
+    partial_log_l_R <- diag(q) # q * q
+    
+    
+    num_run <- 0
+    
+    
+    repeat{
+        # Initilaiation of paramters
+        
+        last_x <- matrix( 1, ncol =1, nrow = 3) # x_{0|0}
+        last_Sig <- diag(3) #Sigma_{0|0}
+        
+        # Initilization of partial derivatives at time 0|0
+        # expand the matrix partial derivative into a vector with a length equal to the number of its entries.
+        last_partial_x_A <-  lapply(1:9, function(x) matrix(1, nrow = 3, ncol = 1)) # 9 * (1 * 3) 
+        last_partial_Sig_A <-  lapply(1:9, function(x) diag(3)) # 9 * (3 * 3)
+        
+        last_partial_x_Q <-  lapply(1:9, function(x) matrix(1, nrow = 3, ncol = 1)) # 9 * (1 * 3)
+        last_partial_Sig_Q <-  lapply(1:9, function(x) diag(3)) # 9 * (3 * 3)
+        
+        last_partial_x_R <-  lapply(1:(N*N), function(x) matrix(1, nrow = 3, ncol = 1)) # N^2 * (1 * 3)
+        last_partial_Sig_R <-  lapply(1:(N*N), function(x) diag(3)) # N^2 * (3 * 3)
+        
+        # list of y_data rate data (T_ * (N * 2))
+        y_t <- vector("list", T_)  
+        for (t in 1:T_) {
+          y_t[[t]] <- as.matrix(y_data[[t]][2])  
+        }
+
+        # iterate along time 1:T_
+        for(i in 1:length(y_data)){  
+          
+            pred_res <- FK_prediction(A, B, C, D, R, Q, last_x, last_Sig) # one step ahead prediction of x and y
+            
+            cur_x      <- pred_res$E_x_t
+            cur_Sig  <- pred_res$Var_x_t
+            cur_y           <- pred_res$E_y_t
+            F_t         <- pred_res$Var_y_t
+            
+            K_t <- cur_Sig %*% t(C) %*% ginv(F_t) # Kalman Gain 3 * n
+            e_t <- y_t[[i]] - C %*% cur_x # innovation N * 1
+            
+            # state estimate update
+            next_x <- cur_x + K_t %*% (y_t[[i]] - C %*% cur_x) # x_{t|t}
+            next_Sig <- cur_Sig - K_t %*% C %*% cur_Sig # Sigma_{t|t}
+                
+            # calcualte the partial derivatives w.r.t. each paramter
+            partial_A_res <- get_partial_A(last_x, last_Sig, cur_x, cur_Sig, last_partial_x_A, last_partial_Sig_A, F_t, e_t, A, B, C, D, Q, R)
+            partial_Q_res <- get_partial_Q(last_x, last_Sig, cur_x, cur_Sig, last_partial_x_Q, last_partial_Sig_Q, F_t, e_t, A, B, C, D, Q, R)
+            partial_R_res <- get_partial_R(last_x, last_Sig, cur_x, cur_Sig, last_partial_x_R, last_partial_Sig_R, F_t, e_t, A, B, C, D, Q, R)
+            
+            # conver the partial derivative from entry by entry form into matrix form
+            partial_log_A_t <- matrix(partial_A_res$log_likelihood_A, nrow = 3, ncol = 3, byrow = TRUE)  
+            partial_log_Q_t <- matrix(partial_Q_res$log_likelihood_Q, nrow = 3, ncol = 3, byrow = TRUE) 
+            partial_log_R_t <- matrix(partial_R_res$log_likelihood_R, nrow = N, ncol = N, byrow = TRUE) 
+
+            
+            # add the current time partial_log_likelihood to the summation of partial_log_likelihood over time 1:T_
+            partial_log_l_A <- partial_log_l_A + partial_log_A_t
+            partial_log_l_Q <- partial_log_l_Q + partial_log_Q_t
+            partial_log_l_R <- partial_log_l_R + partial_log_R_t
+          
+            # update for the next state ( in the format of linked list)
+            last_partial_x_A <- partial_A_res$next_partial_x_A
+            last_partial_Sig_A <- partial_A_res$next_partial_Sig_A
+            
+            last_partial_x_Q <- partial_Q_res$next_partial_x_Q
+            last_partial_Sig_Q <- partial_Q_res$next_partial_Sig_Q
+            
+            last_partial_x_R <- partial_R_res$next_partial_x_R
+            last_partial_Sig_R <- partial_R_res$next_partial_Sig_R
+            
+            last_x <- next_x # x_{t|t}
+            last_Sig <- next_Sig  # Sigma_{t|t}
+            
+        
+        }
+  
+        # update the 
+        A <- A - 0.000001 * partial_log_l_A
+        Q <- Q - 0.000001 * partial_log_l_Q
+        R <- R - 0.000001 * partial_log_l_R
+        
+        # Compute the convergece condition by the ratio of difference of paramters, using Euclidean norm
+        num <- norm(A - lastA, type = "F") + norm(Q - lastQ, type = "F") + norm(R - lastR, type = "F") # 
+        denom <- norm(A, type = "F") + norm(Q, type = "F") + norm(R, type = "F")
+        ratio <- num/denom
+        #print(ratio)
+        
+        if(ratio < 0.0001){
+          break
+        }
+        print(F_t)
+        # parameter update for the next iteration
+        lastA <- A
+        lastQ <- Q
+        lastR <- R
+      
+
+        
+        
+    }
+      
+    return(list(A = A, B = B, C = C, D = D, R = R, Q = Q))
+  
+    
+  
+    
+}

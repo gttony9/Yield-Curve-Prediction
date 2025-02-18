@@ -1,0 +1,175 @@
+---
+title: "Untitled"
+format: html
+---
+
+This file contains the examples of functions and unit test by synthetic data
+
+## Synthetic Data
+We simulate synthetic yield curve data for two scenarios over two time horizons: 10 days and 960 days. The parameters for the Nelson-Siegel model are set as follows: beta_0 = 4, beta_1 = 0, beta_2 = -5, and lambda = 0.5, ensuring positive yields.
+
+(Even though the 960-day case is exaggerated, it allows us to test the model's performance and correctness effectively.)
+
+The two scenarios differ in the structure of the covariance matrix used for generating multivariate normal errors:
+1. A diagonal covariance matrix (OLS case).
+2. A non-diagonal covariance matrix (GLS case).
+
+### Short time window OLS case
+```{r}
+synthetic_data_OLS_Short_R <- generate_data(T_ = 10, betas = c(5, -3, 3), lambda = 0.5, GLS = F)
+synthetic_OLS_yields_Short_R <- synthetic_data_OLS_Short_R$yield_list
+
+synthetic_data_OLS_Short_inverted <- generate_data(T_ = 10, betas = c(5, 0, 3), lambda = 0.5, GLS = F)
+synthetic_OLS_yields_Short_inverted <- synthetic_data_OLS_Short_inverted$yield_list
+```
+
+### Long time window OLS case
+```{r}
+synthetic_data_OLS_Long_R <- generate_data(T_ = 960, betas = c(5, -3, 3), lambda = 0.5, GLS = F)
+synthetic_OLS_yields_Long_R <- synthetic_data_OLS_Long_R$yield_list
+```
+
+### Short time window GLS case
+```{r}
+synthetic_data_GLS_Short_R <- generate_data(T_ = 10, betas = c(5, -3, 3), lambda = 0.5, GLS = T)
+synthetic_GLS_yields_Short_R <- synthetic_data_GLS_Short_R$yield_list
+```
+
+### Long time window GLS case
+```{r}
+synthetic_data_GLS_Long_R <- generate_data(T_ = 960, betas = c(5, -3, 3), lambda = 0.5, GLS = T)
+synthetic_GLS_yields_Long_R <- synthetic_data_GLS_Long_R$yield_list
+```
+
+```{r}
+common_tenors <- c(1/12, 1/4, 1/2, 1,2,3,5,7,10,20)
+```
+
+## Data interpolation
+Data interpolation for normal yield curve
+```{r}
+interp_NS_GLS <- interpolate_list(synthetic_GLS_yields_Long_R, 1, 10, 3)
+
+plot(synthetic_GLS_yields_Long_R[[5]]$Maturity, 
+  synthetic_GLS_yields_Long_R[[1]]$ZERO_YLD1, 
+  xlab = "Time to Maturities", 
+  ylab = "Yield Rate (Percent)", 
+  main = "Interpolated Normal Yield Curve")
+lines(interp_NS_GLS[[5]]$Maturity, interp_NS_GLS[[1]]$ZERO_YLD1)
+```
+Data interpolation for inverted yield curve
+```{r}
+interp_NS_OLS_inverted <- interpolate_list(synthetic_OLS_yields_Short_inverted, 1, 10, 3)
+
+plot(synthetic_OLS_yields_Short_inverted[[5]]$Maturity, 
+  synthetic_OLS_yields_Short_inverted[[1]]$ZERO_YLD1, 
+  xlab = "Time to Maturities", 
+  ylab = "Yield Rate (Percent)", 
+  main = "Interpolated InvertedYield Curve")
+lines(interp_NS_OLS_inverted[[5]]$Maturity, interp_NS_OLS_inverted[[1]]$ZERO_YLD1)
+```
+
+## Estimation
+
+### fit_nelson_siegel in OLS case over short time window
+```{r}
+OLS_fit_Short_R <- fit_nelson_siegel(
+  synthetic_OLS_yields_Short_R, 
+  lambda = 0.5, 
+  start = 1, 
+  tenors = common_tenors, 
+  T_ = 10
+)
+
+cat("Short-term OLS Estimated Betas:", OLS_fit_Short_R$betas, "\n")
+cat("Short-term OLS Estimated Variance:", OLS_fit_Short_R$sigma2, "\n")
+cat("Short-term True Variance:", synthetic_data_OLS_Short_R$sigma2, "\n")
+```
+The short-term OLS fit demonstrates accurate parameter estimation, with betas close to the true values and a variance estimate closely aligning with the synthetic variance.
+
+### fit_nelson_siegel in OLS case over long time window
+```{r}
+OLS_fit_Long_R <- fit_nelson_siegel(
+  synthetic_OLS_yields_Long_R,
+  lambda = 0.5, 
+  start = 1, 
+  tenors = common_tenors, 
+  T_ = 960
+)
+
+cat("Long-term OLS Estimated Betas:", OLS_fit_Long_R$betas, "\n")
+cat("Long-term OLS Estimated Variance:", OLS_fit_Long_R$sigma2, "\n")
+cat("Long-term True Variance:", synthetic_data_OLS_Long_R$sigma2, "\n")
+
+```
+The long-term OLS fit achieves highly accurate parameter estimation, with betas nearly matching the true values and the variance estimate closely approximating the synthetic variance.
+
+### fit_nelson_siegel in GLS case over short time window
+```{r}
+GLS_fit_Short_R<- fit_nelson_siegel_GLS(
+  synthetic_GLS_yields_Short_R, 
+  lambda = 0.5, 
+  start = 1, 
+  tenors = common_tenors, 
+  T_ = 10
+)
+
+cat("Short-term GLS Estimated Betas:", GLS_fit_Short_R$betas, "\n")
+GLS_fit_Short_R$cov_mat
+synthetic_data_GLS_Short_R$cov_mat
+
+```
+Fr short time window, the beta estimate is decent, while the estimated covaraince matrix does not perform well.
+
+
+### fit_nelson_siegel in GLS case over long time window
+
+```{r}
+
+GLS_fit_Long_R <- fit_nelson_siegel_GLS(
+  synthetic_GLS_yields_Long_R, 
+  lambda = 0.5, 
+  start = 1, 
+  tenors = common_tenors, 
+  T_ = 960
+)
+
+cat("Long-term GLS Estimated Betas:", GLS_fit_Long_R$betas, "\n")
+GLS_fit_Long_R$cov_mat
+synthetic_data_GLS_Long_R$cov_mat
+```
+When the time window gets larger, the estimated covariance matrix converges to the true covariance matrix.
+
+### get_likelihood in OLS case (estimation for lambda) 
+
+```{r}
+get_likelihood(yield_list = synthetic_GLS_yields_Short_R, 
+               lambda_list = seq(0.1, .8, 0.01), 
+               start = 1, 
+               T_ = 10, 
+               GLS = T, 
+               tenors = common_tenors)
+```
+The true lambda equals to 0.5, indicating that the estimation is not really accurate in short time window.
+
+```{r}
+get_likelihood(yield_list = synthetic_GLS_yields_Long_R, 
+               lambda_list = seq(0.1, 1, 0.01), 
+               start = 1, 
+               T_ = 960, 
+               GLS = T, 
+               tenors = common_tenors)
+```
+With longer time period, the estimation of lambda is accurate enough
+
+### fit_NS_paramters 
+
+```{r}
+fit_NS_parameters(yield_list = synthetic_GLS_yields_Long_R, 
+                  lambda_list = seq(0.1, 1, 0.01), 
+                  GLS = T,
+                  start = 1, 
+                  T_ = 960, 
+                  tenors = common_tenors)
+```
+The function returns best lambda and betas.

@@ -1,0 +1,603 @@
+---
+title: "Testing goodness of fit for different time window lengths"
+author: "Manny"
+date: "2024-11-27"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+We will generate synthetic data and estimate the NS parameters over a time window to compare goodness-of-fit.
+
+The first will be done by generating yield curves over a time window with constant true parameters.
+
+We will first estimate the parameters using OLS over the entire time window. 
+Then, we will estimate the parameters again but using OLS every year.
+Then, we will do the same but every month.
+Finally, we will do every week.
+
+We will use AIC to compare goodness of fit across 3 simulated scenarios & one real scenario
+
+```{r}
+cs_tenors_r <- c(1/2, 5, 7, 10, 20)
+cs_tenors_i <- c(1/4, 5, 10, 15, 20)
+# These betas we will use for simulations case 2 and 3
+periodic_betas <- matrix(
+  c(5, 5, 4, 5, 5, 5, 5, 4, 5, 5, 5, 5, 4, 5, 5, 5, 5,  # L_t
+    -3, -3, 0, 2, 4, -3, -3, 0, 2, 4, -3, -3, 0, 2, 4, -3, -3,  # S_t
+    3, 0, -3, 2, -2, 3, 0, -3, 2, -2, 3, 0, -3, 2, -2, 3, 0  # C_t
+  ),
+  nrow = 3,  # 4 rows (including headers for clarity)
+  byrow = TRUE
+)
+
+```
+
+Generate yield curves
+
+
+```{r cars}
+set.seed(123)
+Case1_Data <- generate_data(T_ = 960, betas = c(5,-3,3), lambda= 0.35, GLS = F)$yield_list
+Case2_Data = list()
+for(i in 1:16){
+  add_df <- generate_data(T_ = 60, betas = periodic_betas[,i], lambda = 0.35,
+                GLS = F, seed = 123)$yield_list
+  Case2_Data <- append(Case2_Data, add_df)
+}
+
+Case3_Data <- last960FredYields
+```
+
+
+
+Interpolate yields (this will take a few minutes so only run once)
+
+```{r}
+interp_Case1 <- interpolate_list(Case1_Data, 1, 960)
+interp_Case2 <- interpolate_list(Case2_Data, 1, 960)
+interp_Case3 <- interpolate_list(Case3_Data, 1, 960) # this takes about 10-15 minutes to run
+```
+
+Take a look and see if the bootstrap seems reasonable (no crazy jumps and such.)
+```{r}
+plot(Case3_Data[[200]])
+lines(interp_Case3[[200]])
+```
+
+Over each year (assume 250 trading days a year):
+This function compure the AIC values for each fit
+```{r}
+compute_aic <- function(yield_list, window_length, tenors, GLS = F){
+  # yield_list: Parameter of the form of a list of data frames containing ZCB spot rate
+  # window_length: length of time window
+  # tenors: list of time to maturities
+  # GLS: whether use GLS algorithm
+  
+  total_T <- length(yield_list)
+  T_ <- window_length 
+  N <- length(tenors) 
+  nw <- ceiling(round(total_T / T_, 3)) # Number of windows
+  betas_matrix <- matrix(nrow = 3, ncol = nw)
+  aic_vec <- c()
+  lambda_vec <- c()
+  if(nw > 1){
+    for(i in 1:(nw - 1)){
+      NS_fit <- fit_NS_parameters(yield_list = yield_list,
+                                        lambda_list = seq(0.05, 0.95, 0.025),
+                                        GLS = GLS,
+                                        start = (i - 1) * T_ + 1,
+                                        T_ = T_,
+                                        tenors = tenors) # we fit nelson Siegel paramters
+      betas_matrix[,i] <- NS_fit$betas
+      aic_vec[i] <- 2 * 3 - 2 * NS_fit$log_likelihood # compute the AIC value
+      lambda_vec[i] <- NS_fit$lambda
+    } 
+    if(total_T - (nw-1)*T_ == T_){ # check if the remaining data points perfectly match the window_length (whether the last window is a complete window)
+      NS_fit <- fit_NS_parameters(yield_list = yield_list,
+                                          lambda_list = seq(0.05, 0.95, 0.025),
+                                          GLS = GLS,
+                                          start = (nw-1) * T_ + 1,
+                                          T_ = T_,
+                                          tenors = tenors)
+      betas_matrix[,nw] <- NS_fit$betas
+      aic_vec[nw] <- 2 * 3 - 2 * NS_fit$log_likelihood
+      lambda_vec[nw] <- NS_fit$lambda
+    } else { # processes an incomplete last window. (avoid subscript out of bound)
+      print((nw-1) * T_ + 1)
+      NS_fit <- fit_NS_parameters(yield_list = yield_list,
+                                          lambda_list = seq(0.05, 0.95, 0.025),
+                                          GLS = GLS,
+                                          start = (nw-1) * T_ + 1,
+                                          T_ = total_T - (nw-1) * T_,
+                                          tenors = tenors)
+      betas_matrix[,nw] <- NS_fit$betas
+      aic_vec[nw] <- 2 * 3 - 2 * NS_fit$log_likelihood
+      lambda_vec[nw] <- NS_fit$lambda
+    }
+  }
+  else{
+    NS_fit <- fit_NS_parameters(yield_list = yield_list,
+                                          lambda_list = seq(0.05, 0.95, 0.025),
+                                          GLS = GLS,
+                                          start = 1,
+                                          T_ = T_,
+                                          tenors = tenors)
+    betas_matrix[,1] <- NS_fit$betas
+    aic_vec[1] <- 2 * 3 - 2 * NS_fit$log_likelihood
+    lambda_vec[1] <- NS_fit$lambda
+  }
+  return(list(aic = aic_vec, betas = betas_matrix, lambda = lambda_vec))
+}
+
+```
+
+## OLS
+Case 1, OLS
+```{r}
+set.seed(123)
+aic_1_5 <- compute_aic(Case1_Data, 5, cs_tenors_r, GLS = T)
+aic_1_10 <- compute_aic(Case1_Data, 10, cs_tenors_r, GLS = T)
+aic_1_20 <- compute_aic(Case1_Data, 20, cs_tenors_r, GLS = T)
+aic_1_40 <- compute_aic(Case1_Data, 40, cs_tenors_r, GLS = T)
+aic_1_60 <- compute_aic(Case1_Data, 60, cs_tenors_r, GLS =T)
+aic_1_80 <- compute_aic(Case1_Data, 80, cs_tenors_r, GLS =T)
+aic_1_120 <- compute_aic(Case1_Data, 120, cs_tenors_r, GLS = T)
+
+
+aic_df1 <- data.frame(Time_Window = c(rep(5, ceiling(960/5)),
+                                   rep(10, ceiling(960/10)),
+                                   rep(20, ceiling(960/20)),
+                                   rep(40, ceiling(960/40)),
+                                   rep(60, ceiling(960/60)),
+                                   rep(80, ceiling(960/80)),
+                                   rep(120, ceiling(960/120))),
+          
+                                 AIC_per_window = c(aic_1_5$aic,
+                                                    aic_1_10$aic,
+                                                    aic_1_20$aic,
+                                                    aic_1_40$aic,
+                                                    aic_1_60$aic,
+                                                    aic_1_80$aic,
+                                                    aic_1_120$aic
+                                                    ),
+                     lambda_per_window = c(aic_1_5$lambda,
+                                                    aic_1_10$lambda,
+                                                    aic_1_20$lambda,
+                                                    aic_1_40$lambda,
+                                                    aic_1_60$lambda,
+                                                    aic_1_80$lambda,
+                                                    aic_1_120$lambda
+                                                    ))
+
+
+aic_df1$Time_Window <- as.factor(aic_df1$Time_Window)
+
+bpAic1 <- ggplot(aic_df1, aes(x = Time_Window, y = AIC_per_window)) +
+  geom_boxplot(fill = "lightblue", color = "darkblue") +
+  labs(x = "Time Window Length (Days)",
+       y = "AIC") + theme_economist_white() + theme(
+    axis.title.y = element_text(margin = margin(r = 10)),
+    axis.title.x = element_text(margin = margin(t = 10)),
+    plot.title = element_text(hjust = 0.5, margin = margin(b= 10)))
+
+bpLogLik1 <- ggplot(aic_df1, aes(x = Time_Window, y = lambda_per_window)) +
+  geom_boxplot(fill = "lightblue", color = "darkblue") +
+  labs(x = "Time Window Length (Days)",
+       y = "Lambda MLE") + geom_hline(yintercept = 0.35, linetype = 'longdash', color = 'red') + theme_economist_white() + theme(
+    axis.title.y = element_text(margin = margin(r = 10)),
+    axis.title.x = element_text(margin = margin(t = 10)),
+    plot.title = element_text(hjust = 0.5, margin = margin(b= 10)))
+makeLatexLabs(bpAic1, newY = '$AIC(\\hat{\\beta})$', newTitle = "AIC of Estimates per Time Window Length")
+makeLatexLabs(bpLogLik1, newY = '$\\hat{\\lambda$}^{MLE}', newTitle = "MLE of $\\lambda$ per Time Window Length")
+```
+For some date, lets see what the nelson siegel fitted line looks like compared to the real yields to maturity
+
+```{r}
+NS_C1 <- fit_NS_parameters(Case1_Data, GLS = F, start = 1, T_ = 120, tenors = cs_tenors_r)
+betasC1 <- NS_C1$betas
+lamC1 <- NS_C1$lambda
+
+gridMonthTo20 <- seq(1/12, 20, 0.1)
+phi2c1 <- (1 - exp(- lamC1 * gridMonthTo20)) / (lamC1 * gridMonthTo20)
+phi3c1 <- phi2c1 - exp(- lamC1 * gridMonthTo20)
+trueLine <- data.frame(x = gridMonthTo20,
+                       y = betasC1[1] + betasC1[2] * phi2c1 + betasC1[3] * phi3c1,
+                       source = 'Fitted Line')
+
+trueLinePlot <- ggplot() + 
+  geom_point(data = Case1_Data[[1]], aes(x = Maturity, y = ZERO_YLD1)) + 
+  geom_line(data = trueLine, aes(x = x, y = y, color = source), linetype = 'longdash') + theme_economist_white() + theme(
+    axis.title.y = element_text(margin = margin(r = 10), size = 12),
+    axis.title.x = element_text(margin = margin(t = 10), size = 12),
+    plot.title = element_text(hjust = 0.5, margin = margin(b= 10)))
+
+makeLatexLabs(trueLinePlot, '$\\tau$  (years)', '$y_t(\\tau)$  (Annualized  %)', "Simulated Data + Nelson Siegel Fitted Line (Case 1)")
+```
+Case 2, OLS
+```{r}
+aic_2_5 <- compute_aic(Case2_Data, 5, cs_tenors_r, GLS = F)
+aic_2_10 <- compute_aic(Case2_Data, 10, cs_tenors_r, GLS = F)
+aic_2_20 <- compute_aic(Case2_Data, 20, cs_tenors_r, GLS = F)
+aic_2_40 <- compute_aic(Case2_Data, 40, cs_tenors_r, GLS = F)
+aic_2_60 <- compute_aic(Case2_Data, 60, cs_tenors_r, GLS = F)
+aic_2_80 <- compute_aic(Case2_Data, 80, cs_tenors_r, GLS = F)
+aic_2_120 <- compute_aic(Case2_Data, 120, cs_tenors_r, GLS = F)
+
+aic_df2 <- data.frame(Time_Window = c(
+    rep(5, ceiling(960/5)),
+    rep(10, ceiling(960/10)),
+    rep(20, ceiling(960/20)),
+    rep(40, ceiling(960/40)),
+    rep(60, ceiling(960/60)),
+    rep(80, ceiling(960/80)),
+    rep(120, ceiling(960/120))),
+  AIC_per_window = c(
+    aic_2_5$aic,
+    aic_2_10$aic,
+    aic_2_20$aic,
+    aic_2_40$aic,
+    aic_2_60$aic,
+    aic_2_80$aic,
+    aic_2_120$aic), 
+  lambda_per_window = c(
+    aic_2_5$lambda,
+    aic_2_10$lambda,
+    aic_2_20$lambda,
+    aic_2_40$lambda,
+    aic_2_60$lambda,
+    aic_2_80$lambda,
+    aic_2_120$lambda))
+
+aic_df2$Time_Window <- as.factor(aic_df2$Time_Window)
+
+bpAic2 <- ggplot(aic_df2, aes(x = Time_Window, y = AIC_per_window)) +
+  geom_boxplot(fill = "lightblue", color = "darkblue") +
+  labs(x = "Time Window Length (Days)",
+       y = "AIC") + theme_economist_white() + theme(
+    axis.title.y = element_text(margin = margin(r = 10)),
+    axis.title.x = element_text(margin = margin(t = 10)),
+    plot.title = element_text(hjust = 0.5, margin = margin(b= 10)))
+
+bpLam2 <- ggplot(aic_df2, aes(x = Time_Window, y = lambda_per_window)) +
+  geom_boxplot(fill = "lightblue", color = "darkblue") +
+  labs(x = "Time Window Length (Days)",
+       y = "Lambda MLE") + geom_hline(yintercept = 0.35, linetype = 'longdash', color = 'red') + theme_economist_white() + theme(
+    axis.title.y = element_text(margin = margin(r = 10)),
+    axis.title.x = element_text(margin = margin(t = 10)),
+    plot.title = element_text(hjust = 0.5, margin = margin(b= 10)))
+makeLatexLabs(bpAic2, newY = '$AIC(\\hat{\\beta})$', newTitle = "AIC of Estimates per Time Window Length")
+makeLatexLabs(bpLam2, newY = '$\\hat{\\lambda$}^{MLE}', newTitle = "MLE of $\\lambda$ per Time Window Length")
+
+
+```
+```{r}
+NS_C2 <- fit_NS_parameters(Case2_Data, GLS = F, start = 41, T_ = 40, tenors = cs_tenors_r)
+betasC2 <- NS_C2$betas
+lamC2 <- NS_C2$lambda
+
+gridMonthTo20 <- seq(1/12, 20, 0.1)
+phi2c2 <- (1 - exp(- lamC2 * gridMonthTo20)) / (lamC2 * gridMonthTo20)
+phi3c2 <- phi2c2 - exp(- lamC2 * gridMonthTo20)
+trueLine <- data.frame(x = gridMonthTo20,
+                       y = betasC2[1] + betasC2[2] * phi2c2 + betasC2[3] * phi3c2,
+                       source = 'Fitted Line')
+
+trueLinePlot <- ggplot() + 
+  geom_point(data = Case2_Data[[59]], aes(x = Maturity, y = ZERO_YLD1)) + 
+  geom_line(data = trueLine, aes(x = x, y = y, color = source), linetype = 'longdash') + theme_economist_white() + theme(
+    axis.title.y = element_text(margin = margin(r = 10), size = 12),
+    axis.title.x = element_text(margin = margin(t = 10), size = 12),
+    plot.title = element_text(hjust = 0.5, margin = margin(b= 10)))
+
+makeLatexLabs(trueLinePlot, '$\\tau$  (years)', '$y_t(\\tau)$  (Annualized  %)', "Simulated Data + Nelson Siegel Fitted Line (Case 1)")
+```
+Case 3, OLS
+```{r}
+#aic_3_5 <- compute_aic(Case3_Data, 5, cs_tenors_r, GLS = T)
+aic_3_10 <- compute_aic(Case3_Data, 10, cs_tenors_r, GLS = F)
+aic_3_20 <- compute_aic(Case3_Data, 20, cs_tenors_r, GLS = F)
+aic_3_40 <- compute_aic(Case3_Data, 40, cs_tenors_r, GLS = F)
+aic_3_60 <- compute_aic(Case3_Data, 60, cs_tenors_r, GLS = F)
+aic_3_80 <- compute_aic(Case3_Data, 80, cs_tenors_r, GLS = F)
+aic_3_120 <- compute_aic(Case3_Data, 120, cs_tenors_r, GLS = F)
+
+aic_df3 <- data.frame(Time_Window = c(#rep(5, ceiling(960/5)),
+                                   rep(10, ceiling(960/10)),
+                                   rep(20, ceiling(960/20)),
+                                   rep(40, ceiling(960/40)),
+                                   rep(60, ceiling(960/60)),
+                                   rep(80, ceiling(960/80)),
+                                   rep(120, ceiling(960/120))),
+          
+                                 AIC_per_window = c(#aic_3_5$aic,
+                                                    aic_3_10$aic,
+                                                    aic_3_20$aic,
+                                                    aic_3_40$aic,
+                                                    aic_3_60$aic,
+                                                    aic_3_80$aic,
+                                                    aic_3_120$aic
+                                                    ),
+                     lambda_per_window = c(#aic_3_5$lambda,
+                                                    aic_3_10$lambda,
+                                                    aic_3_20$lambda,
+                                                    aic_3_40$lambda,
+                                                    aic_3_60$lambda,
+                                                    aic_3_80$lambda,
+                                                    aic_3_120$lambda
+                                                    ))
+
+
+aic_df3$Time_Window <- as.factor(aic_df3$Time_Window)
+
+bpAic3 <- ggplot(aic_df3, aes(x = Time_Window, y = AIC_per_window)) +
+  geom_boxplot(fill = "lightblue", color = "darkblue") +
+  labs(x = "Time Window Length (Days)",
+       y = "AIC") + theme_economist_white() + theme(
+    axis.title.y = element_text(margin = margin(r = 10)),
+    axis.title.x = element_text(margin = margin(t = 10)),
+    plot.title = element_text(hjust = 0.5, margin = margin(b= 10)))
+
+bpLam3 <- ggplot(aic_df3, aes(x = Time_Window, y = lambda_per_window)) +
+  geom_boxplot(fill = "lightblue", color = "darkblue") +
+  labs(x = "Time Window Length (Days)",
+       y = "Lambda MLE") + theme_economist_white() + theme(
+    axis.title.y = element_text(margin = margin(r = 10)),
+    axis.title.x = element_text(margin = margin(t = 10)),
+    plot.title = element_text(hjust = 0.5, margin = margin(b= 10)))
+
+makeLatexLabs(bpAic3, newY = '$AIC(\\hat{\\beta})$', newTitle = "AIC of Estimates per Time Window Length")
+makeLatexLabs(bpLam3, newY = '$\\hat{\\lambda$}^{MLE}', newTitle = "MLE of $\\lambda$ per Time Window Length")
+
+
+```
+
+
+```{r}
+
+NS_C3 <- fit_NS_parameters(Case3_Data, GLS = F, start = 800, T_ = 80, tenors = cs_tenors_r)
+betasC3 <- NS_C3$betas
+lamC3 <- NS_C3$lambda
+
+gridMonthTo20 <- seq(1/12, 20, 0.1)
+phi2c1 <- (1 - exp(- lamC3 * gridMonthTo20)) / (lamC3 * gridMonthTo20)
+phi3c1 <- phi2c1 - exp(- lamC3 * gridMonthTo20)
+trueLine <- data.frame(x = gridMonthTo20,
+                       y = betasC3[1] + betasC3[2] * phi2c1 + betasC3[3] * phi3c1,
+                       source = 'Fitted Line')
+
+trueLinePlot <- ggplot() + 
+  geom_point(data = Case3_Data[[890]][1:10,], aes(x = Maturity, y = ZERO_YLD1)) + 
+  geom_line(data = trueLine, aes(x = x, y = y, color = source), linetype = 'longdash') + theme_economist_white() + theme(
+    axis.title.y = element_text(margin = margin(r = 10), size = 12),
+    axis.title.x = element_text(margin = margin(t = 10), size = 12),
+    plot.title = element_text(hjust = 0.5, margin = margin(b= 10)))
+
+makeLatexLabs(trueLinePlot, '$\\tau$  (years)', '$y_t(\\tau)$  (Annualized  %)', "Simulated Data + Nelson Siegel Fitted Line (Case 1)")
+```
+
+
+## GLS
+
+Case 1, GLS
+```{r}
+aic_1_10 <- compute_aic(Case1_Data, 10, cs_tenors_r, GLS = T)
+aic_1_20 <- compute_aic(Case1_Data, 20, cs_tenors_r, GLS = T)
+aic_1_40 <- compute_aic(Case1_Data, 40, cs_tenors_r, GLS = T)
+aic_1_60 <- compute_aic(Case1_Data, 60, cs_tenors_r, GLS =T)
+aic_1_80 <- compute_aic(Case1_Data, 80, cs_tenors_r, GLS =T)
+aic_1_120 <- compute_aic(Case1_Data, 120, cs_tenors_r, GLS = T)
+
+
+aic_df1 <- data.frame(Time_Window = c(
+                                   rep(10, ceiling(960/10)),
+                                   rep(20, ceiling(960/20)),
+                                   rep(40, ceiling(960/40)),
+                                   rep(60, ceiling(960/60)),
+                                   rep(80, ceiling(960/80)),
+                                   rep(120, ceiling(960/120))),
+          
+                                 AIC_per_window = c(
+                                                    aic_1_10$aic,
+                                                    aic_1_20$aic,
+                                                    aic_1_40$aic,
+                                                    aic_1_60$aic,
+                                                    aic_1_80$aic,
+                                                    aic_1_120$aic
+                                                    ),
+                     lambda_per_window = c(
+                                                    aic_1_10$lambda,
+                                                    aic_1_20$lambda,
+                                                    aic_1_40$lambda,
+                                                    aic_1_60$lambda,
+                                                    aic_1_80$lambda,
+                                                    aic_1_120$lambda
+                                                    ))
+
+
+aic_df1$Time_Window <- as.factor(aic_df1$Time_Window)
+
+bpAic1 <- ggplot(aic_df1, aes(x = Time_Window, y = AIC_per_window)) +
+  geom_boxplot(fill = "lightblue", color = "darkblue") +
+  labs(x = "Time Window Length (Days)",
+       y = "AIC") + theme_economist_white() + theme(
+    axis.title.y = element_text(margin = margin(r = 10)),
+    axis.title.x = element_text(margin = margin(t = 10)),
+    plot.title = element_text(hjust = 0.5, margin = margin(b= 10)))
+
+bpLogLik1 <- ggplot(aic_df1, aes(x = Time_Window, y = lambda_per_window)) +
+  geom_boxplot(fill = "lightblue", color = "darkblue") +
+  labs(x = "Time Window Length (Days)",
+       y = "Lambda MLE") + geom_hline(yintercept = 0.35, linetype = 'longdash', color = 'red') + theme_economist_white() + theme(
+    axis.title.y = element_text(margin = margin(r = 10)),
+    axis.title.x = element_text(margin = margin(t = 10)),
+    plot.title = element_text(hjust = 0.5, margin = margin(b= 10)))
+makeLatexLabs(bpAic1, newY = '$AIC(\\hat{\\beta})$', newTitle = "AIC of Estimates per Time Window Length")
+makeLatexLabs(bpLogLik1, newY = '$\\hat{\\lambda$}^{MLE}', newTitle = "MLE of $\\lambda$ per Time Window Length")
+```
+
+For some date, lets see what the nelson siegel fitted line looks like compared to the real yields to maturity
+
+```{r}
+NS_C1 <- fit_NS_parameters(Case1_Data, GLS = F, start = 1, T_ = 120, tenors = cs_tenors_r)
+betasC1 <- NS_C1$betas
+lamC1 <- NS_C1$lambda
+
+gridMonthTo20 <- seq(1/12, 20, 0.1)
+phi2c1 <- (1 - exp(- lamC1 * gridMonthTo20)) / (lamC1 * gridMonthTo20)
+phi3c1 <- phi2c1 - exp(- lamC1 * gridMonthTo20)
+trueLine <- data.frame(x = gridMonthTo20,
+                       y = betasC1[1] + betasC1[2] * phi2c1 + betasC1[3] * phi3c1,
+                       source = 'Fitted Line')
+
+trueLinePlot <- ggplot() + 
+  geom_point(data = Case1_Data[[1]], aes(x = Maturity, y = ZERO_YLD1)) + 
+  geom_line(data = trueLine, aes(x = x, y = y, color = source), linetype = 'longdash') + theme_economist_white() + theme(
+    axis.title.y = element_text(margin = margin(r = 10), size = 12),
+    axis.title.x = element_text(margin = margin(t = 10), size = 12),
+    plot.title = element_text(hjust = 0.5, margin = margin(b= 10)))
+
+makeLatexLabs(trueLinePlot, '$\\tau$  (years)', '$y_t(\\tau)$  (Annualized  %)', "Simulated Data + Nelson Siegel Fitted Line (Case 1)")
+```
+
+Case 2, GLS
+
+```{r}
+aic_2_10 <- compute_aic(Case2_Data, 10, cs_tenors_r, GLS = T)
+aic_2_20 <- compute_aic(Case2_Data, 20, cs_tenors_r, GLS = T)
+aic_2_40 <- compute_aic(Case2_Data, 40, cs_tenors_r, GLS = T)
+aic_2_60 <- compute_aic(Case2_Data, 60, cs_tenors_r, GLS = T)
+aic_2_80 <- compute_aic(Case2_Data, 80, cs_tenors_r, GLS = T)
+aic_2_120 <- compute_aic(Case2_Data, 120, cs_tenors_r, GLS = T)
+
+aic_df2 <- data.frame(Time_Window = c(
+    rep(10, ceiling(960/10)),
+    rep(20, ceiling(960/20)),
+    rep(40, ceiling(960/40)),
+    rep(60, ceiling(960/60)),
+    rep(80, ceiling(960/80)),
+    rep(120, ceiling(960/120))),
+  AIC_per_window = c(
+    aic_2_10$aic,
+    aic_2_20$aic,
+    aic_2_40$aic,
+    aic_2_60$aic,
+    aic_2_80$aic,
+    aic_2_120$aic), 
+  lambda_per_window = c(
+    aic_2_10$lambda,
+    aic_2_20$lambda,
+    aic_2_40$lambda,
+    aic_2_60$lambda,
+    aic_2_80$lambda,
+    aic_2_120$lambda))
+
+aic_df2$Time_Window <- as.factor(aic_df2$Time_Window)
+
+bpAic2 <- ggplot(aic_df2, aes(x = Time_Window, y = AIC_per_window)) +
+  geom_boxplot(fill = "lightblue", color = "darkblue") +
+  labs(x = "Time Window Length (Days)",
+       y = "AIC") + theme_economist_white() + theme(
+    axis.title.y = element_text(margin = margin(r = 10)),
+    axis.title.x = element_text(margin = margin(t = 10)),
+    plot.title = element_text(hjust = 0.5, margin = margin(b= 10)))
+
+bpLam2 <- ggplot(aic_df2, aes(x = Time_Window, y = lambda_per_window)) +
+  geom_boxplot(fill = "lightblue", color = "darkblue") +
+  labs(x = "Time Window Length (Days)",
+       y = "Lambda MLE") + geom_hline(yintercept = 0.35, linetype = 'longdash', color = 'red') + theme_economist_white() + theme(
+    axis.title.y = element_text(margin = margin(r = 10)),
+    axis.title.x = element_text(margin = margin(t = 10)),
+    plot.title = element_text(hjust = 0.5, margin = margin(b= 10)))
+makeLatexLabs(bpAic2, newY = '$AIC(\\hat{\\beta})$', newTitle = "AIC of Estimates per Time Window Length")
+makeLatexLabs(bpLam2, newY = '$\\hat{\\lambda$}^{MLE}', newTitle = "MLE of $\\lambda$ per Time Window Length")
+
+
+```
+
+
+```{r}
+NS_C2 <- fit_NS_parameters(Case2_Data, GLS = F, start = 41, T_ = 40, tenors = cs_tenors_r)
+betasC2 <- NS_C2$betas
+lamC2 <- NS_C2$lambda
+
+gridMonthTo20 <- seq(1/12, 20, 0.1)
+phi2c2 <- (1 - exp(- lamC2 * gridMonthTo20)) / (lamC2 * gridMonthTo20)
+phi3c2 <- phi2c2 - exp(- lamC2 * gridMonthTo20)
+trueLine <- data.frame(x = gridMonthTo20,
+                       y = betasC2[1] + betasC2[2] * phi2c2 + betasC2[3] * phi3c2,
+                       source = 'Fitted Line')
+
+trueLinePlot <- ggplot() + 
+  geom_point(data = Case2_Data[[59]], aes(x = Maturity, y = ZERO_YLD1)) + 
+  geom_line(data = trueLine, aes(x = x, y = y, color = source), linetype = 'longdash') + theme_economist_white() + theme(
+    axis.title.y = element_text(margin = margin(r = 10), size = 12),
+    axis.title.x = element_text(margin = margin(t = 10), size = 12),
+    plot.title = element_text(hjust = 0.5, margin = margin(b= 10)))
+
+makeLatexLabs(trueLinePlot, '$\\tau$  (years)', '$y_t(\\tau)$  (Annualized  %)', "Simulated Data + Nelson Siegel Fitted Line (Case 1)")
+```
+
+Case 3, GLS
+
+```{r}
+aic_3_10 <- compute_aic(Case3_Data, 10, cs_tenors_r, GLS = T)
+aic_3_20 <- compute_aic(Case3_Data, 20, cs_tenors_r, GLS = T)
+aic_3_40 <- compute_aic(Case3_Data, 40, cs_tenors_r, GLS = T)
+aic_3_60 <- compute_aic(Case3_Data, 60, cs_tenors_r, GLS = T)
+aic_3_80 <- compute_aic(Case3_Data, 80, cs_tenors_r, GLS = T)
+aic_3_120 <- compute_aic(Case3_Data, 120, cs_tenors_r, GLS = T)
+
+aic_df3 <- data.frame(Time_Window = c(
+                                   rep(10, ceiling(960/10)),
+                                   rep(20, ceiling(960/20)),
+                                   rep(40, ceiling(960/40)),
+                                   rep(60, ceiling(960/60)),
+                                   rep(80, ceiling(960/80)),
+                                   rep(120, ceiling(960/120))),
+          
+                                 AIC_per_window = c(
+                                                    aic_3_10$aic,
+                                                    aic_3_20$aic,
+                                                    aic_3_40$aic,
+                                                    aic_3_60$aic,
+                                                    aic_3_80$aic,
+                                                    aic_3_120$aic
+                                                    ),
+                     lambda_per_window = c(
+                                                    aic_3_10$lambda,
+                                                    aic_3_20$lambda,
+                                                    aic_3_40$lambda,
+                                                    aic_3_60$lambda,
+                                                    aic_3_80$lambda,
+                                                    aic_3_120$lambda
+                                                    ))
+
+
+aic_df3$Time_Window <- as.factor(aic_df3$Time_Window)
+
+bpAic3 <- ggplot(aic_df3, aes(x = Time_Window, y = AIC_per_window)) +
+  geom_boxplot(fill = "lightblue", color = "darkblue") +
+  labs(x = "Time Window Length (Days)",
+       y = "AIC") + theme_economist_white() + theme(
+    axis.title.y = element_text(margin = margin(r = 10)),
+    axis.title.x = element_text(margin = margin(t = 10)),
+    plot.title = element_text(hjust = 0.5, margin = margin(b= 10)))
+
+bpLam3 <- ggplot(aic_df3, aes(x = Time_Window, y = lambda_per_window)) +
+  geom_boxplot(fill = "lightblue", color = "darkblue") +
+  labs(x = "Time Window Length (Days)",
+       y = "Lambda MLE") + theme_economist_white() + theme(
+    axis.title.y = element_text(margin = margin(r = 10)),
+    axis.title.x = element_text(margin = margin(t = 10)),
+    plot.title = element_text(hjust = 0.5, margin = margin(b= 10)))
+
+makeLatexLabs(bpAic3, newY = '$AIC(\\hat{\\beta})$', newTitle = "AIC of Estimates per Time Window Length")
+makeLatexLabs(bpLam3, newY = '$\\hat{\\lambda$}^{MLE}', newTitle = "MLE of $\\lambda$ per Time Window Length")
+
+
+```
