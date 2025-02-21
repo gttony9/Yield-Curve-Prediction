@@ -7,7 +7,7 @@ library(tibble)
 library(MASS)
 ``` 
 
-
+# KF_Prediction (one step ahead prediction)
 ```{r}
 #This  funciton is used for one step ahed prediction
 
@@ -25,7 +25,7 @@ FK_prediction <- function(A, B, C, D, R, Q, last_x, last_x_var){
   Var_x_t <- A %*% last_x_var %*% t(A)  + B %*% Q  %*%  B # Sigma_{t|t-1} covariance matrix of one step ahead prediction for latent paramter
   
   E_y_t <- C %*% A %*% last_x # y_{t|t-1} one step ahead prediction for reponse variable
-  Var_y_t <- C %*% (A %*% last_x_var %*% t(A) + B %*% Q %*% t(B)) %*% t(A) %*% t(C) + D %*% R %*% t(D) # F, covariance for y prediction
+  Var_y_t <- C %*% (A %*% last_x_var %*% t(A) + B %*% Q %*% t(B)) %*% t(C) + D %*% R %*% t(D) # F, covariance for y prediction
   
   
   return(list(
@@ -36,10 +36,9 @@ FK_prediction <- function(A, B, C, D, R, Q, last_x, last_x_var){
   ))
 }
 ```
-
+# get_C (compute C matrix)
 ```{r}
 get_C <- function(lambda, tenors = c(1/12,3/12,6/12,1,2,3,5,7,10,20)) {
-
   
   # Compute basis functions
   B0 <- rep(1, length(tenors))
@@ -55,8 +54,9 @@ T_ <- 960
 ```
 
 
-# Kalman Filter Paramter Estimation
+# KF_Estaimte (Kalman Filter Paramter Estimation)
 ```{r}
+
 KF_Estimate <- function(yields, T_, tenors = c(1/12,3/12,6/12,1,2,3,5,7,10,20), lambda = 0.5){
     # yield: Parameter of the form of a list of data frames containing ZCB spot rate
     # T_: length of time window
@@ -123,7 +123,8 @@ KF_Estimate <- function(yields, T_, tenors = c(1/12,3/12,6/12,1,2,3,5,7,10,20), 
             # state estimate update
             next_x <- cur_x + K_t %*% (y_t[[i]] - C %*% cur_x) # x_{t|t}
             next_Sig <- cur_Sig - K_t %*% C %*% cur_Sig # Sigma_{t|t}
-                
+             
+              
             # calcualte the partial derivatives w.r.t. each paramter
             partial_A_res <- get_partial_A(last_x, last_Sig, cur_x, cur_Sig, last_partial_x_A, last_partial_Sig_A, F_t, e_t, A, B, C, D, Q, R)
             partial_Q_res <- get_partial_Q(last_x, last_Sig, cur_x, cur_Sig, last_partial_x_Q, last_partial_Sig_Q, F_t, e_t, A, B, C, D, Q, R)
@@ -133,8 +134,8 @@ KF_Estimate <- function(yields, T_, tenors = c(1/12,3/12,6/12,1,2,3,5,7,10,20), 
             partial_log_A_t <- matrix(partial_A_res$log_likelihood_A, nrow = 3, ncol = 3, byrow = TRUE)  
             partial_log_Q_t <- matrix(partial_Q_res$log_likelihood_Q, nrow = 3, ncol = 3, byrow = TRUE) 
             partial_log_R_t <- matrix(partial_R_res$log_likelihood_R, nrow = N, ncol = N, byrow = TRUE) 
-
             
+           
             # add the current time partial_log_likelihood to the summation of partial_log_likelihood over time 1:T_
             partial_log_l_A <- partial_log_l_A + partial_log_A_t
             partial_log_l_Q <- partial_log_l_Q + partial_log_Q_t
@@ -400,23 +401,27 @@ get_partial_R <- function(last_x, last_Sig, cur_x, cur_Sig, last_partial_x_R, la
 
 ```
 
-```{r}
 
+
+# Partial Log-Likelihood Approximation
+```{r}
+# Partial Likelihood Mid-point Approximation
 KF_likelihood <-function(A, B, C, D, Q, R, last_Sig, y_t, cur_x){
   
-  F_t <- C %*% (A %*% last_Sig %*% t(A) + B %*% Q %*% t(B)) %*% t(A) %*% t(C) + D %*% R %*% t(D)
-
+  F_t <- C %*% (A %*% last_Sig %*% t(A) + B %*% Q %*% t(B)) %*% t(C) + D %*% R %*% t(D)
+  
   e_t <- as.matrix(y_t - C %*% cur_x)
-
-  log_likelihood_t <- -0.5 * (log(det(F_t)) + t(e_t) %*% solve(F_t) %*% e_t + length(y_t) * log(2 * pi))
+  
+  log_likelihood_t <- -0.5 * (log(det(F_t)) + t(e_t) %*% ginv(F_t) %*% e_t + length(y_t) * log(2 * pi))
+  #print(F_t)  
   return(log_likelihood_t)
-}
+} 
 
 
 #get_partial_R(last_x, last_Sig, cur_x, cur_Sig, last_partial_x_R, last_partial_Sig_R, F_t, e_t, A, B, C, D, Q, R)
-partial_A_approx <- function(A, B, C, D, Q, R, last_Sig, y_t, cur_x, h=1e-5){
+partial_A_approx <- function(A, B, C, D, Q, R, last_Sig, y_t, cur_x, h=1e-3){
   log_likelihood_0 <- KF_likelihood(A, B, C, D, Q, R, last_Sig, y_t, cur_x)
-  
+  print(log_likelihood_0)
   grad_A <- matrix(0, nrow=nrow(A), ncol=ncol(A))
   
   for (i in 1:nrow(A)) {
@@ -430,13 +435,72 @@ partial_A_approx <- function(A, B, C, D, Q, R, last_Sig, y_t, cur_x, h=1e-5){
 
       log_likelihood_plus <- KF_likelihood(A_plus, B, C, D, Q, R, last_Sig, y_t, cur_x)
       log_likelihood_minus <- KF_likelihood(A_minus, B, C, D, Q, R, last_Sig, y_t, cur_x)
-
+      #print(cat("par:",log_likelihood_plus ))
       grad_A[i, j] <- (log_likelihood_plus - log_likelihood_minus) / (2 * h)
     }
   }
+  
   return(grad_A)
+} 
+
+
+
+
+
+partial_Q_approx <- function(A, B, C, D, Q, R, last_Sig, y_t, cur_x, h=1e-5){
+  log_likelihood_0 <- KF_likelihood(A, B, C, D, Q, R, last_Sig, y_t, cur_x)
+  
+  grad_Q <- matrix(0, nrow=nrow(Q), ncol=ncol(Q))
+  
+  for (i in 1:nrow(Q)) {
+    for (j in 1:ncol(Q)) {
+      # Create perturbed matrices
+      Q_plus <- Q
+      Q_minus <- Q
+      
+      Q_plus[i, j] <- Q_plus[i, j] + h
+      Q_minus[i, j] <- Q_minus[i, j] - h
+
+      log_likelihood_plus <- KF_likelihood(A, B, C, D, Q_plus, R, last_Sig, y_t, cur_x)
+      log_likelihood_minus <- KF_likelihood(A, B, C, D, Q_minus, R, last_Sig, y_t, cur_x)
+
+      grad_Q[i, j] <- (log_likelihood_plus - log_likelihood_minus) / (2 * h)
+    }
+  }
+  return(grad_Q)
 }
 
+
+
+
+
+partial_R_approx <- function(A, B, C, D, Q, R, last_Sig, y_t, cur_x, h=1e-5){
+  log_likelihood_0 <- KF_likelihood(A, B, C, D, Q, R, last_Sig, y_t, cur_x)
+  
+  grad_R <- matrix(0, nrow=nrow(R), ncol=ncol(R))
+  
+  for (i in 1:nrow(R)) {
+    for (j in 1:ncol(R)) {
+      # Create perturbed matrices
+      R_plus <- R
+      R_minus <- R
+      
+      R_plus[i, j] <- R_plus[i, j] + h
+      R_minus[i, j] <- R_minus[i, j] - h
+
+      log_likelihood_plus <- KF_likelihood(A, B, C, D, Q, R_plus, last_Sig, y_t, cur_x)
+      log_likelihood_minus <- KF_likelihood(A, B, C, D, Q, R_minus, last_Sig, y_t, cur_x)
+
+      grad_R[i, j] <- (log_likelihood_plus - log_likelihood_minus) / (2 * h)
+    }
+  }
+  return(grad_R)
+}
+
+
+tenors = c(1/12,3/12,6/12,1,2,3,5,7,10,20)
+lambda = 0.5
+N <-10
 A <- diag(3) # 3 * 3
 B <- diag(3) # 3 * 3
 C <- get_C(lambda, tenors = tenors) #  nelson siegel design matrix
@@ -445,8 +509,50 @@ Q <- diag(3) # 3 * 3
 R <- diag(N) # N * N
 cur_x <- matrix(1, ncol = 1, nrow = 3)
 last_Sig <- diag(3)
+for(i in 1:10){
+  partial_A <- partial_A_approx(A, B, C, D, Q, R, last_Sig = last_Sig, y_t = synthetic_OLS_yields_Long_R[[3]][2], cur_x = cur_x, h=1e-5); partial_A
+  A <- A +  partial_A
+  i <- i+1
+}
 
-partial_A_approx(A, B, C, D, Q, R, last_Sig = last_Sig, y_t = synthetic_OLS_yields_Long_R[[3]][2], cur_x = cur_x, h=1e-2)
+partial_A <- partial_A_approx(A, B, C, D, Q, R, last_Sig = last_Sig, y_t = synthetic_OLS_yields_Long_R[[3]][2], cur_x = cur_x, h=1e-5); partial_A
+
+
+
+#partial_Q_approx(A, B, C, D, Q, R, last_Sig = last_Sig, y_t = synthetic_OLS_yields_Long_R[[3]][2], cur_x = cur_x, h=1e-5)
+#partial_R_approx(A, B, C, D, Q, R, last_Sig = last_Sig, y_t = synthetic_OLS_yields_Long_R[[3]][2], cur_x = cur_x, h=1e-5)
+# Example test case to update A iteratively and measure overall time
+N <- 10
+A <- diag(3)    # 3 x 3
+B <- diag(3)    # 3 x 3
+C <- get_C(lambda, tenors = tenors)  # Nelson-Siegel design matrix
+D <- diag(N)    # N x N
+Q <- diag(3)    # 3 x 3
+R <- diag(N)    # N x N
+cur_x <- matrix(1, ncol = 1, nrow = 3)
+last_Sig <- diag(3)
+
+# Make sure synthetic_OLS_yields_Long_R is loaded and available.
+# Here, we assume synthetic_OLS_yields_Long_R[[3]][2] returns the appropriate y_t matrix.
+
+# Measure overall time for 10 iterations
+elapsed_time <- system.time({
+  for(i in 1:10){
+    partial_A <- partial_A_approx(A, B, C, D, Q, R, last_Sig = last_Sig, 
+                                  y_t = synthetic_OLS_yields_Long_R[[3]][2], 
+                                  cur_x = cur_x, h = 1e-5)
+    A <- A + partial_A
+  }
+})
+
+for(i in 1:10){
+    partial_A <- partial_A_approx(A, B, C, D, Q, R, last_Sig = last_Sig, 
+                                  y_t = synthetic_OLS_yields_Long_R[[3]][2], 
+                                  cur_x = cur_x, h = 1e-5)
+    A <- A + partial_A
+}
+
+print(elapsed_time)
 
 ```
 
@@ -496,7 +602,7 @@ numerical_gradient_loglik <- function(kalman_func, param_name, param_matrix, Y, 
 ```
 
 
-# KF test ( may not work beacsue of the bias from matrix inversion)
+# KF test (may not work beacsue of the bias from matrix inversion)
 ```{r}
 
 KF_Estimate(yields, 10, tenors = c(1/12,3/12,6/12,1,2,3,5,7,10,20), lambda = 0.5)
@@ -506,242 +612,299 @@ KF_Estimate(yields = last960FredYields, 960, tenors = c(1/12,3/12,6/12,1,2,3,5,7
 ```
 
 
+# KF loop
+```{r}
+A <- diag(3) # 3 * 3
+B <- diag(3) # 3 * 3
+C <- get_C(lambda, tenors = tenors) #  nelson siegel design matrix
+D <- diag(N) # N * N
+Q <- 0.1 * diag(3) # 3 * 3
+R <- 0.1 * diag(N) # N * N
+
+
+KF_loop <- function(A, B, C, D, R, Q, yields, T_) {
+  # Preallocate list for observations (assumes yields is a vector or similar)
+  y_t <- vector("list", T_)
+  y_t <- vector("list", T_)  
+  for (t in 1:T_) {
+    y_t[[t]] <- as.matrix(yields[[t]][2])  
+  }
+  
+  
+  # Initial state (x_{0|0}) and covariance (Sigma_{0|0})
+  last_x <- matrix(1, nrow = 3, ncol = 1)
+  last_Sig <- diag(3)
+  
+  # Preallocate matrices to store expected observations and actual observations.
+  # Here, we assume the observation dimension is determined by the rows of C.
+  n_y <- nrow(C)
+  E_y_vec <- matrix(0, nrow = 10, ncol = T_)
+  y_real <- matrix(0, nrow = 10, ncol = T_)
+  E_x_vec <- matrix(0, nrow = 3, ncol = T_)
+  x_real <- matrix(0, nrow = 3, ncol = T_)
+  
+  # Kalman Filter loop over time
+  for (i in 1:T_) {
+    # One-step ahead prediction for state and covariance
+    E_x_t <- A %*% last_x
+    Var_x_t <- A %*% last_Sig %*% t(A) + B %*% Q %*% t(B)
+    
+    # One-step ahead prediction for observation and its covariance
+    E_y_t <- C %*% E_x_t
+    F_t <- C %*% Var_x_t %*% t(C) + D %*% R %*% t(D)
+    
+    # Compute Kalman Gain
+    K_t <- Var_x_t %*% t(C) %*% ginv(F_t)
+    
+    # Innovation: difference between actual and predicted observation
+    e_t <- y_t[[i]] - E_y_t
+    
+    # Update state estimate and covariance with innovation
+    next_x <- E_x_t + K_t %*% e_t
+    next_Sig <- Var_x_t - K_t %*% C %*% Var_x_t
+    
+    # Store the predicted observation and the actual observation
+    E_y_vec[, i] <- as.vector(E_y_t)
+    y_real[, i] <- as.vector(y_t[[i]])
+    E_x_vec[, i] <- as.vector(E_x_t)
+    #x_real[, i] <- as.vector(y_t[[i]])
+    
+    # Update variables for next iteration
+    last_x <- next_x
+    last_Sig <- next_Sig
+  }
+  
+  # Plot the first component of the predicted observations vs. actual observations
+  plot(1:T_, E_y_vec[1, ], type = "l", col = "blue", 
+       ylim = range(c(E_y_vec, y_real)), xlab = "Time", 
+       ylab = "Observation", main = "Kalman Filter Predictions vs. Real Observations")
+  points(1:T_, y_real[1,], col = "red", pch = 16, cex = 0.5)
+  legend("topright", legend = c("Predicted", "Real"), col = c("blue", "red"), lty = 1, pch = c(NA, 1))
+  
+  #plot(plot(1:T_, E_x_vec[1, ])
+  # Return a list containing the predicted and actual observations
+  return(list(E_y_vec = E_y_vec, y_real = y_real, E_x_vec = E_x_vec))
+} 
+
+# Example call to KF_loop:
+# Replace A, B, C, D, R, Q, and yields with your actual matrices and data.
+# Also, specify T_ as the number of time steps, e.g., T_ <- length(synthetic_OLS_yields_Long_R)
+# KF_loop(A, B, C, D, R, Q, synthetic_OLS_yields_Long_R, T_)
+
+
+A_stable %*% A_stable
+A_stable  %*% A_stable
+A_stable <- matrix(c(0.99, 0, 0.01,
+              0, 1.005, 0,
+              0, 0, 0.995), 
+            nrow = 3, byrow = TRUE)
+for (t in 2:T_) {
+  beta_values[t, ] <- A_stable %*% beta_values[t - 1, ]
+}
+for( i in 1:200){
+  data[[i]] <- generate_data(T_ = 1, betas = beta_values[i, ], lambda = 0.5, GLS = F)$yield_list[[1]]
+}
+
+a <- KF_loop(A, B, C, D, R, Q, data, T_ = 30)
+
+plot(1:T_,a$E_x_vec[1,])
+points(1:T_, beta_values[,1], col = "red", pch = 16, cex = 0.5)
+
+plot(1:T_, a$E_x_vec[2,])
+points(1:T_, beta_values[,2], col = "red", pch = 16, cex = 0.5)
+
+plot(1:T_, a$E_x_vec[3,])
+points(1:T_, beta_values[,3], col = "red", pch = 16, cex = 0.5)
+
+KF_Estimate_approx(data, 200, tenors = c(1/12,3/12,6/12,1,2,3,5,7,10,20), lambda = 0.5)
+
+```
+
+
 # case studies (not finished)
 ```{r}
 set.seed(123)
 beta <- c(5, -3, 3)
 
-A_stable <- matrix(c(0.7, 0.3, -0.2,
-                     -0.2, 0.8, 0.1,
-                      0.1, -0.1, 0.7), nrow = 3, byrow = TRUE)
+A_stable <- matrix(c(0.9, 0, 0,
+                  0, 0.9, 0,
+                  0, 0, 0.9), 
+            nrow = 3, byrow = TRUE)
+A_stable
+mat<- A_stable
+for( i in 1:200){
+  mat <- mat %*% A_stable
+}
+mat
 
-
-
-T_ <- 200
+T_ <- 30
 
 beta_values <- matrix(0, nrow = T_, ncol = 3)
 
 beta_values[1, ] <- beta
 
 for (t in 2:T_) {
-  beta_values[t, ] <- A %*% beta_values[t - 1, ]
+  beta_values[t, ] <- A_stable %*% beta_values[t - 1, ]
 }
 
 data <- list()
-for( i in 1:20){
+for( i in 1:T_){
   data[[i]] <- generate_data(T_ = 1, betas = beta_values[i, ], lambda = 0.5, GLS = F)$yield_list[[1]]
-  
 }
+
 data[[1]]
 data[[1]][1]
-KF_Estimate(data, 20, tenors = c(1/12,3/12,6/12,1,2,3,5,7,10,20), lambda = 0.5, x_init = c(5, -3, 3))
+KF_Estimate_approx(data, T_ = 30, tenors = c(1/12,3/12,6/12,1,2,3,5,7,10,20), lambda = 0.5)
 
 
-Q <- matrix()
-10 * log10( det(1.1 * R) / det( Q) )
 
-KF_Estimate(yields, T_, tenors = c(1/12,3/12,6/12,1,2,3,5,7,10,20), lambda = 0.5, x_init = c(5, -3, 3))
+
+
+
+partial_log_A_t <- partial_A_approx(A, B, C, D, Q, R, last_Sig = last_Sig, y_t = synthetic_OLS_yields_Long_R[[3]][2], cur_x = cur_x, h=1e-5)
+partial_log_Q_t <- partial_Q_approx(A, B, C, D, Q, R, last_Sig = last_Sig, y_t = synthetic_OLS_yields_Long_R[[3]][2], cur_x = cur_x, h=1e-5)
+partial_log_R_t <- partial_R_approx(A, B, C, D, Q, R, last_Sig = last_Sig, y_t = synthetic_OLS_yields_Long_R[[3]][2], cur_x = cur_x, h=1e-5)
 ```
 
 
 
 ```{r}
-# Case study on the initialization of paratmeters
 
-
-```
-
-```{r}
-# Case study on the 
-```
-
-```{r}
-
-KF_Estimate_gneral <- function(y_data , T_, dim_A = a, dim_cov_R = r, dim_cov_Q = q){
-    # y_data: Parameter of the form of a list of data frames 
+KF_Estimate_approx <- function(yields, T_, tenors = c(1/12,3/12,6/12,1,2,3,5,7,10,20), lambda = 0.5){
+    # yield: Parameter of the form of a list of data frames containing ZCB spot rate
     # T_: length of time window
-    # x: a * 1
-    # y: k * 1
-    
-    k <- ncol(y) # dimension of y at time t
+    # tenors: list of time to maturities
+    # lambda_list: grid of lambda
+  
+    N <- length(tenors) # numerb of tenors
     
     # Initialization of parameters 
     # In the early stage, we assume default dimension for Q and R, B hence D to be 3*3/n*n identity matrix 
-    A <- diag(a) # a * a
-    B <- matrix(rnorm(a * r), nrow = a, ncol = r)  # a * r # a * r 
-    Q <- diag(r) # r * r
-    C <- matrix(rnorm(k * a), nrow = k, ncol = a) # k * a
-    D <- matrix(rnorm(k * q), nrow = k, ncol = q) # k * q
-    R <- diag(q) # q * q
+    A <- diag(3) # 3 * 3
+    B <-diag(3) # 3 * 3
+    C <- get_C(lambda, tenors = tenors) #  nelson siegel design matrix
+    D <- diag(N) # N * N
+    Q <- 0.1 * diag(3) # 3 * 3
+    R <- 0.1 * diag(N) # N * N
     
-    
-    # place holder for last result iteration of parameter estimation
-    lastA <- 10*diag(a) # a * a
-    lastB <- 10*matrix(rnorm(a * r), nrow = a, ncol = r)  # a * r # a * r 
-    lastQ <- 10*diag(r) # r * r
-    lastC <- 10*matrix(rnorm(k * a), nrow = k, ncol = a) # k * a
-    lsatD <- 10*matrix(rnorm(k * q), nrow = k, ncol = q) # k * q
-    lastR <- 10*diag(q) # q * q
+     # place holder for last result iteration of parameter estimation
+    lastA <- 10*diag(3)  
+    lastQ <- 10*diag(3)
+    lastR <- 10*diag(N) 
     
     # Initialization of partial derivatives w.r.t paramters
-    partial_log_l_A <- diag(a) # a * a
-    partial_log_l_B <- matrix(rnorm(a * r), nrow = a, ncol = r)  # a * r # a * r 
-    partial_log_l_Q <- diag(r) # r * r
-    partial_log_l_C <- matrix(rnorm(k * a), nrow = k, ncol = a) # k * a
-    partial_log_l_D <- matrix(rnorm(k * q), nrow = k, ncol = q) # k * q
-    partial_log_l_R <- diag(q) # q * q
+    partial_log_l_A <- diag(3)
+    partial_log_l_Q <- diag(3)
+    partial_log_l_R <- diag(N)
+    num_run <- 1
     
-    
-    num_run <- 0
-    
+    y_t <- vector("list", T_)  
+    for (t in 1:T_) {
+      y_t[[t]] <- as.matrix(yields[[t]][2])  
+    }
     
     repeat{
+        
         # Initilaiation of paramters
         
-        last_x <- matrix( 1, ncol =1, nrow = a) # x_{0|0}
+        last_x <- matrix( 1, ncol =1, nrow = 3) # x_{0|0}
         last_Sig <- diag(3) #Sigma_{0|0}
         
         # Initilization of partial derivatives at time 0|0
         # expand the matrix partial derivative into a vector with a length equal to the number of its entries.
-        last_partial_x_A <-  lapply(1:(a^2), function(x) matrix(1, nrow = a, ncol = 1)) # a^2 * (a * 1)
-        last_partial_Sig_A <-  lapply(1:(a^2), function(x) diag(a)) # a^2 * (a * a)
+        last_partial_x_A <-  lapply(1:9, function(x) matrix(1, nrow = 3, ncol = 1)) # 9 * (1 * 3) 
+        last_partial_Sig_A <-  lapply(1:9, function(x) diag(3)) # 9 * (3 * 3)
         
-        last_partial_x_B <-  lapply(1:(a*q), function(x) matrix(1, nrow = a, ncol = 1)) # a*q * (1 * a)
-        last_partial_Sig_B <-  lapply(1:(a*q), function(x) diag(a)) # 9 * (a * a)
+        last_partial_x_Q <-  lapply(1:9, function(x) matrix(1, nrow = 3, ncol = 1)) # 9 * (1 * 3)
+        last_partial_Sig_Q <-  lapply(1:9, function(x) diag(3)) # 9 * (3 * 3)
         
-        last_partial_x_Q <-  lapply(1:(q*q), function(x) matrix(1, nrow = a, ncol = 1)) # q*q * (1 * a)
-        last_partial_Sig_Q <-  lapply(1:(q*q), function(x) diag(a)) # q*q * (a * a)
+        last_partial_x_R <-  lapply(1:(N*N), function(x) matrix(1, nrow = 3, ncol = 1)) # N^2 * (1 * 3)
+        last_partial_Sig_R <-  lapply(1:(N*N), function(x) diag(3)) # N^2 * (3 * 3)
         
-        last_partial_x_C <-  lapply(1:(k*a), function(x) matrix(1, nrow = a, ncol = 1)) # k*a * (1 * a)
-        last_partial_Sig_C <-  lapply(1:(k*a), function(x) diag(a)) # k*a * (a * a)
-        
-        last_partial_x_D <-  lapply(1:(k*r), function(x) matrix(1, nrow = a, ncol = 1)) # k*r * (1 * a)
-        last_partial_Sig_D <-  lapply(1:(k*r), function(x) diag(a)) # k*r * (a * a)
-        
-        last_partial_x_R <-  lapply(1:(r*r), function(x) matrix(1, nrow = 3, ncol = 1)) # r*r * (1 * a)
-        last_partial_Sig_R <-  lapply(1:(r*r), function(x) diag(a)) # r*r * (a * a)
-        
-        # list of y_data rate data (T_ * (N * 2))
+        # list of yield rate data (T_ * (N * 2))
         
 
         # iterate along time 1:T_
-        for(i in 1:nrow(y_data)){  
+        for(i in 1:length(yields)){  
           
             pred_res <- FK_prediction(A, B, C, D, R, Q, last_x, last_Sig) # one step ahead prediction of x and y
             
-            cur_x      <- pred_res$E_x_t
-            cur_Sig  <- pred_res$Var_x_t
-            cur_y           <- pred_res$E_y_t
-            F_t         <- pred_res$Var_y_t
+            cur_x <- pred_res$E_x_t
+            cur_Sig <- pred_res$Var_x_t
+            cur_y <- pred_res$E_y_t
+            F_t <- pred_res$Var_y_t
             
-            K_t <- cur_Sig %*% t(C) %*% ginv(F_t) # Kalman Gain a * k
-            e_t <- y_data[i,] - C %*% cur_x # innovation k * 1
+            K_t <- cur_Sig %*% t(C) %*% ginv(F_t) # Kalman Gain 3 * n
+            e_t <- y_t[[i]] - C %*% cur_x # innovation N * 1
             
             # state estimate update
-            next_x <- cur_x + K_t %*% (y_data[i,] - C %*% cur_x) # x_{t|t}
+            next_x <- cur_x + K_t %*% (y_t[[i]] - C %*% cur_x) # x_{t|t}
             next_Sig <- cur_Sig - K_t %*% C %*% cur_Sig # Sigma_{t|t}
-                
+             
+            #print(cur_x)
+            #print(F_t)
             # calcualte the partial derivatives w.r.t. each paramter
-            partial_A_res <- get_partial_A(last_x, last_Sig, cur_x, cur_Sig, last_partial_x_A, last_partial_Sig_A, F_t, e_t, A, B, C, D, Q, R)
-            partial_B_res <- get_partial_B(last_x, last_Sig, cur_x, cur_Sig, last_partial_x_B, last_partial_Sig_B, F_t, e_t, A, B, C, D, Q, R)
-            partial_Q_res <- get_partial_Q(last_x, last_Sig, cur_x, cur_Sig, last_partial_x_Q, last_partial_Sig_Q, F_t, e_t, A, B, C, D, Q, R)
-            partial_C_res <- get_partial_C(last_x, last_Sig, cur_x, cur_Sig, last_partial_x_C, last_partial_Sig_C, F_t, e_t, A, B, C, D, Q, R)
-            partial_D_res <- get_partial_D(last_x, last_Sig, cur_x, cur_Sig, last_partial_x_D, last_partial_Sig_D, F_t, e_t, A, B, C, D, Q, R)
-            partial_R_res <- get_partial_R(last_x, last_Sig, cur_x, cur_Sig, last_partial_x_R, last_partial_Sig_R, F_t, e_t, A, B, C, D, Q, R)
-            
-            # convert the partial derivative from entry by entry form into matrix form
-            partial_log_A_t <- matrix(partial_A_res$log_likelihood_A, nrow = a, ncol = a, byrow = TRUE)  
-            partial_log_B_t <- matrix(partial_B_res$log_likelihood_B, nrow = a, ncol = q, byrow = TRUE) 
-            partial_log_Q_t <- matrix(partial_Q_res$log_likelihood_Q, nrow = q, ncol = q, byrow = TRUE) 
-            partial_log_C_t <- matrix(partial_C_res$log_likelihood_C, nrow = k, ncol = a, byrow = TRUE) 
-            partial_log_D_t <- matrix(partial_D_res$log_likelihood_D, nrow = k, ncol = r, byrow = TRUE) 
-            partial_log_R_t <- matrix(partial_R_res$log_likelihood_R, nrow = r, ncol = r, byrow = TRUE) 
-
-            
+            partial_log_A_t <- partial_A_approx(A, B, C, D, Q, R, last_Sig = last_Sig, y_t = y_t[[i]], cur_x = cur_x, h=1e-3)
+            partial_log_Q_t <- partial_Q_approx(A, B, C, D, Q, R, last_Sig = last_Sig, y_t = y_t[[i]], cur_x = cur_x, h=1e-3)
+            partial_log_R_t <- partial_R_approx(A, B, C, D, Q, R, last_Sig = last_Sig, y_t = y_t[[i]], cur_x = cur_x, h=1e-3)
+           
             # add the current time partial_log_likelihood to the summation of partial_log_likelihood over time 1:T_
             partial_log_l_A <- partial_log_l_A + partial_log_A_t
-            partial_log_l_B <- partial_log_l_B + partial_log_A_t
             partial_log_l_Q <- partial_log_l_Q + partial_log_Q_t
-            partial_log_l_C <- partial_log_l_C + partial_log_A_t
-            partial_log_l_D <- partial_log_l_D + partial_log_A_t
             partial_log_l_R <- partial_log_l_R + partial_log_R_t
-          
-            # update for the next state ( in the format of linked list)
-            last_partial_x_A <- partial_A_res$next_partial_x_A
-            last_partial_Sig_A <- partial_A_res$next_partial_Sig_A
             
-            last_partial_x_Q <- partial_Q_res$next_partial_x_Q
-            last_partial_Sig_Q <- partial_Q_res$next_partial_Sig_Q
-            
-            last_partial_x_R <- partial_R_res$next_partial_x_R
-            last_partial_Sig_R <- partial_R_res$next_partial_Sig_R
             
             last_x <- next_x # x_{t|t}
             last_Sig <- next_Sig  # Sigma_{t|t}
-            
+            print(cat(num_run, i))
         
         }
-  
+        num_run <- num_run +1
+        
         # update the 
-        A <- A - 0.000001 * partial_log_l_A
-        Q <- Q - 0.000001 * partial_log_l_Q
-        R <- R - 0.000001 * partial_log_l_R
+        A <- A - 0.00001 * partial_log_l_A
+        Q <- Q - 0.00001 * partial_log_l_Q
+        R <- R - 0.00001 * partial_log_l_R
+        #print(A)
+       
         
         # Compute the convergece condition by the ratio of difference of paramters, using Euclidean norm
         num <- norm(A - lastA, type = "F") + norm(Q - lastQ, type = "F") + norm(R - lastR, type = "F") # 
         denom <- norm(A, type = "F") + norm(Q, type = "F") + norm(R, type = "F")
         ratio <- num/denom
-        #print(ratio)
         
-        if(ratio < 0.0001){
+        if(ratio < 0.0005){
           break
         }
-        print(F_t)
+        
         # parameter update for the next iteration
+        
         lastA <- A
         lastQ <- Q
         lastR <- R
-      
-
+        print(A)
+        print(partial_log_l_A)
+        print(ratio)
         
         
     }
       
     return(list(A = A, B = B, C = C, D = D, R = R, Q = Q))
   
-    
-  
-    
 }
+
+synthetic_data_OLS_Short_inverted <- generate_data(T_ = 30, betas = c(5, 0, 3), lambda = 0.5, GLS = F)
+synthetic_OLS_yields_Short_inverted <- synthetic_data_OLS_Short_inverted$yield_list
+
+KF_Estimate_approx(data, 30, tenors = c(1/12,3/12,6/12,1,2,3,5,7,10,20), lambda = 0.5)
+
+#KF_Estimate_approx(data, 200, tenors = c(1/12,3/12,6/12,1,2,3,5,7,10,20), lambda = 0.5)
+#KF_Estimate_approx(synthetic_OLS_yields_Long_R, 960, tenors = c(1/12,3/12,6/12,1,2,3,5,7,10,20), lambda = 0.5)
+KF_Estimate_approx(synthetic_OLS_yields_Long_R, 960, tenors = c(1/12,3/12,6/12,1,2,3,5,7,10,20), lambda = 0.5)
+
 ```
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+```{r}
+# Case study on the 
+```
 
